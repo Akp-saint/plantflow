@@ -1,0 +1,531 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("POSTGRES_DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  MANAGER
+  CASHIER
+  STAFF
+}
+
+enum ProductionStatus {
+  VALIDATED
+  NEEDS_REVIEW
+  CANCELLED
+}
+
+enum RecordStatus {
+  POSTED
+  CANCELLED
+}
+
+enum InventoryMovementType {
+  PURCHASE
+  PRODUCTION_OUTPUT
+  PRODUCTION_CONSUMPTION
+  DAMAGE
+  SALE
+  ADJUSTMENT
+  RETURN
+}
+
+enum CashTransactionType {
+  IN
+  OUT
+}
+
+enum PaymentMethod {
+  CASH
+  BANK
+  MOBILE_MONEY
+  OTHER
+}
+
+model Workspace {
+  id                String              @id @default(uuid())
+  name              String
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  plants            Plant[]
+  members           WorkspaceMember[]
+  brickSizes        BrickSize[]
+  materials         Material[]
+  recipes           Recipe[]
+  productions       ProductionEntry[]
+  movements         InventoryMovement[]
+  customers         Customer[]
+  vendors           Vendor[]
+  sales             Sale[]
+  purchases         Purchase[]
+  workers           Worker[]
+  labourEntries     LabourEntry[]
+  labourPayments    LabourPayment[]
+  expenseCategories ExpenseCategory[]
+  expenses          Expense[]
+  cashAccounts      CashAccount[]
+  auditLogs         AuditLog[]
+}
+
+model User {
+  id          String            @id @default(uuid())
+  email       String            @unique
+  name        String
+  passwordHash String
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  memberships WorkspaceMember[]
+  auditLogs   AuditLog[]
+  sessions    AppSession[]
+}
+
+model AppSession {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model WorkspaceMember {
+  id          String        @id @default(uuid())
+  workspaceId String
+  userId      String
+  role        Role          @default(STAFF)
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plantAccess PlantMember[]
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Plant {
+  id             String              @id @default(uuid())
+  workspaceId    String
+  name           String
+  city           String?
+  address        String?
+  currency       String              @default("XOF")
+  workspace      Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members        PlantMember[]
+  productions    ProductionEntry[]
+  movements      InventoryMovement[]
+  customers      Customer[]
+  vendors        Vendor[]
+  sales          Sale[]
+  purchases      Purchase[]
+  workers        Worker[]
+  labourEntries  LabourEntry[]
+  labourPayments LabourPayment[]
+  expenses       Expense[]
+  cashAccounts   CashAccount[]
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([workspaceId])
+}
+
+model PlantMember {
+  id       String          @id @default(uuid())
+  plantId  String
+  memberId String
+  plant    Plant           @relation(fields: [plantId], references: [id], onDelete: Cascade)
+  member   WorkspaceMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([plantId, memberId])
+}
+
+model BrickSize {
+  id          String              @id @default(uuid())
+  workspaceId String
+  name        String
+  dimensions  String
+  unit        String              @default("u")
+  active      Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  recipes     Recipe[]
+  productions ProductionEntry[]
+  movements   InventoryMovement[]
+  saleItems   SaleItem[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, active])
+}
+
+model Material {
+  id            String              @id @default(uuid())
+  workspaceId   String
+  name          String
+  category      String
+  unit          String
+  lowStockAt    Decimal             @default(0) @db.Decimal(14, 3)
+  active        Boolean             @default(true)
+  createdAt     DateTime            @default(now())
+  workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  recipeItems   RecipeItem[]
+  movements     InventoryMovement[]
+  purchaseItems PurchaseItem[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, active])
+}
+
+model Recipe {
+  id          String            @id @default(uuid())
+  workspaceId String
+  name        String
+  brickSizeId String
+  active      Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  brickSize   BrickSize         @relation(fields: [brickSizeId], references: [id])
+  items       RecipeItem[]
+  productions ProductionEntry[]
+
+  @@unique([workspaceId, name, brickSizeId])
+  @@index([workspaceId, active])
+}
+
+model RecipeItem {
+  id         String   @id @default(uuid())
+  recipeId   String
+  materialId String
+  quantity   Decimal  @db.Decimal(14, 5)
+  recipe     Recipe   @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  material   Material @relation(fields: [materialId], references: [id])
+
+  @@unique([recipeId, materialId])
+}
+
+model ProductionEntry {
+  id               String              @id @default(uuid())
+  workspaceId      String
+  plantId          String
+  brickSizeId      String
+  recipeId         String?
+  productionDate   DateTime
+  quantityProduced Int
+  quantityDamaged  Int                 @default(0)
+  labourCost       Decimal?            @db.Decimal(14, 2)
+  status           ProductionStatus    @default(VALIDATED)
+  notes            String?
+  createdById      String
+  workspace        Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plant            Plant               @relation(fields: [plantId], references: [id])
+  brickSize        BrickSize           @relation(fields: [brickSizeId], references: [id])
+  recipe           Recipe?             @relation(fields: [recipeId], references: [id])
+  movements        InventoryMovement[]
+  labourEntries    LabourEntry[]
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@index([workspaceId, plantId, productionDate])
+}
+
+model InventoryMovement {
+  id            String                @id @default(uuid())
+  workspaceId   String
+  plantId       String
+  materialId    String?
+  brickSizeId   String?
+  productionId  String?
+  type          InventoryMovementType
+  quantity      Decimal               @db.Decimal(16, 3)
+  reason        String?
+  referenceType String?
+  referenceId   String?
+  createdById   String
+  workspace     Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plant         Plant                 @relation(fields: [plantId], references: [id])
+  material      Material?             @relation(fields: [materialId], references: [id])
+  brickSize     BrickSize?            @relation(fields: [brickSizeId], references: [id])
+  production    ProductionEntry?      @relation(fields: [productionId], references: [id])
+  createdAt     DateTime              @default(now())
+
+  @@index([workspaceId, plantId, createdAt])
+  @@index([materialId, plantId])
+  @@index([brickSizeId, plantId])
+}
+
+model Customer {
+  id          String    @id @default(uuid())
+  workspaceId String
+  plantId     String
+  name        String
+  phone       String?
+  email       String?
+  address     String?
+  active      Boolean   @default(true)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plant       Plant     @relation(fields: [plantId], references: [id])
+  sales       Sale[]
+  createdAt   DateTime  @default(now())
+
+  @@index([workspaceId, plantId, name])
+}
+
+model Vendor {
+  id          String     @id @default(uuid())
+  workspaceId String
+  plantId     String
+  name        String
+  phone       String?
+  email       String?
+  address     String?
+  active      Boolean    @default(true)
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plant       Plant      @relation(fields: [plantId], references: [id])
+  purchases   Purchase[]
+  createdAt   DateTime   @default(now())
+
+  @@index([workspaceId, plantId, name])
+}
+
+model Sale {
+  id            String        @id @default(uuid())
+  workspaceId   String
+  plantId       String
+  customerId    String
+  invoiceNumber String
+  saleDate      DateTime
+  totalAmount   Decimal       @db.Decimal(14, 2)
+  status        RecordStatus  @default(POSTED)
+  notes         String?
+  createdById   String
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plant         Plant         @relation(fields: [plantId], references: [id])
+  customer      Customer      @relation(fields: [customerId], references: [id])
+  items         SaleItem[]
+  payments      SalePayment[]
+  createdAt     DateTime      @default(now())
+
+  @@unique([workspaceId, invoiceNumber])
+  @@index([workspaceId, plantId, saleDate])
+  @@index([customerId, status])
+}
+
+model SaleItem {
+  id          String    @id @default(uuid())
+  saleId      String
+  brickSizeId String
+  quantity    Int
+  unitPrice   Decimal   @db.Decimal(14, 2)
+  lineTotal   Decimal   @db.Decimal(14, 2)
+  sale        Sale      @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  brickSize   BrickSize @relation(fields: [brickSizeId], references: [id])
+}
+
+model SalePayment {
+  id            String        @id @default(uuid())
+  saleId        String
+  amount        Decimal       @db.Decimal(14, 2)
+  method        PaymentMethod @default(CASH)
+  cashAccountId String?
+  note          String?
+  receivedById  String
+  paidAt        DateTime      @default(now())
+  sale          Sale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  cashAccount   CashAccount?  @relation(fields: [cashAccountId], references: [id])
+
+  @@index([saleId, paidAt])
+}
+
+model Purchase {
+  id           String            @id @default(uuid())
+  workspaceId  String
+  plantId      String
+  vendorId     String
+  reference    String
+  purchaseDate DateTime
+  totalAmount  Decimal           @db.Decimal(14, 2)
+  status       RecordStatus      @default(POSTED)
+  notes        String?
+  createdById  String
+  workspace    Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plant        Plant             @relation(fields: [plantId], references: [id])
+  vendor       Vendor            @relation(fields: [vendorId], references: [id])
+  items        PurchaseItem[]
+  payments     PurchasePayment[]
+  createdAt    DateTime          @default(now())
+
+  @@unique([workspaceId, reference])
+  @@index([workspaceId, plantId, purchaseDate])
+}
+
+model PurchaseItem {
+  id         String   @id @default(uuid())
+  purchaseId String
+  materialId String
+  quantity   Decimal  @db.Decimal(14, 3)
+  unitCost   Decimal  @db.Decimal(14, 2)
+  lineTotal  Decimal  @db.Decimal(14, 2)
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  material   Material @relation(fields: [materialId], references: [id])
+}
+
+model PurchasePayment {
+  id            String        @id @default(uuid())
+  purchaseId    String
+  amount        Decimal       @db.Decimal(14, 2)
+  method        PaymentMethod @default(CASH)
+  cashAccountId String?
+  note          String?
+  paidById      String
+  paidAt        DateTime      @default(now())
+  purchase      Purchase      @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  cashAccount   CashAccount?  @relation(fields: [cashAccountId], references: [id])
+
+  @@index([purchaseId, paidAt])
+}
+
+model Worker {
+  id            String          @id @default(uuid())
+  workspaceId   String
+  plantId       String
+  name          String
+  jobTitle      String?
+  phone         String?
+  active        Boolean         @default(true)
+  workspace     Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plant         Plant           @relation(fields: [plantId], references: [id])
+  labourEntries LabourEntry[]
+  payments      LabourPayment[]
+  createdAt     DateTime        @default(now())
+
+  @@index([workspaceId, plantId, active])
+}
+
+model LabourEntry {
+  id           String           @id @default(uuid())
+  workspaceId  String
+  plantId      String
+  workerId     String?
+  productionId String?
+  teamName     String?
+  workDate     DateTime
+  quantity     Decimal?         @db.Decimal(14, 3)
+  amount       Decimal          @db.Decimal(14, 2)
+  notes        String?
+  status       RecordStatus     @default(POSTED)
+  createdById  String
+  workspace    Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plant        Plant            @relation(fields: [plantId], references: [id])
+  worker       Worker?          @relation(fields: [workerId], references: [id])
+  production   ProductionEntry? @relation(fields: [productionId], references: [id])
+  payments     LabourPayment[]
+  createdAt    DateTime         @default(now())
+
+  @@index([workspaceId, plantId, workDate])
+}
+
+model LabourPayment {
+  id            String        @id @default(uuid())
+  workspaceId   String
+  plantId       String
+  workerId      String?
+  labourEntryId String?
+  cashAccountId String?
+  amount        Decimal       @db.Decimal(14, 2)
+  method        PaymentMethod @default(CASH)
+  paidAt        DateTime      @default(now())
+  note          String?
+  paidById      String
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plant         Plant         @relation(fields: [plantId], references: [id])
+  worker        Worker?       @relation(fields: [workerId], references: [id])
+  labourEntry   LabourEntry?  @relation(fields: [labourEntryId], references: [id])
+  cashAccount   CashAccount?  @relation(fields: [cashAccountId], references: [id])
+
+  @@index([workspaceId, plantId, paidAt])
+}
+
+model ExpenseCategory {
+  id          String    @id @default(uuid())
+  workspaceId String
+  name        String
+  active      Boolean   @default(true)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  expenses    Expense[]
+
+  @@unique([workspaceId, name])
+}
+
+model CashAccount {
+  id               String            @id @default(uuid())
+  workspaceId      String
+  plantId          String
+  name             String
+  openingBalance   Decimal           @default(0) @db.Decimal(14, 2)
+  active           Boolean           @default(true)
+  workspace        Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plant            Plant             @relation(fields: [plantId], references: [id])
+  transactions     CashTransaction[]
+  salePayments     SalePayment[]
+  purchasePayments PurchasePayment[]
+  labourPayments   LabourPayment[]
+  expenses         Expense[]
+  createdAt        DateTime          @default(now())
+
+  @@index([workspaceId, plantId, active])
+}
+
+model CashTransaction {
+  id            String              @id @default(uuid())
+  accountId     String
+  type          CashTransactionType
+  amount        Decimal             @db.Decimal(14, 2)
+  referenceType String?
+  referenceId   String?
+  reason        String?
+  createdById   String
+  createdAt     DateTime            @default(now())
+  account       CashAccount         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+}
+
+model Expense {
+  id            String          @id @default(uuid())
+  workspaceId   String
+  plantId       String
+  categoryId    String
+  cashAccountId String?
+  description   String
+  amount        Decimal         @db.Decimal(14, 2)
+  paymentMethod PaymentMethod   @default(CASH)
+  expenseDate   DateTime
+  notes         String?
+  createdById   String
+  workspace     Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plant         Plant           @relation(fields: [plantId], references: [id])
+  category      ExpenseCategory @relation(fields: [categoryId], references: [id])
+  cashAccount   CashAccount?    @relation(fields: [cashAccountId], references: [id])
+  createdAt     DateTime        @default(now())
+
+  @@index([workspaceId, plantId, expenseDate])
+}
+
+model AuditLog {
+  id          String    @id @default(uuid())
+  workspaceId String
+  userId      String
+  action      String
+  entity      String
+  entityId    String?
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id])
+
+  @@index([workspaceId, createdAt])
+}

@@ -1,0 +1,25 @@
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { Router, type NextFunction, type Request, type Response } from 'express';
+import type { User } from '@prisma/client';
+import { z } from 'zod';
+import { prisma } from './db';
+
+export type AuthenticatedUser = Pick<User, 'id' | 'email' | 'name'>;
+export type AuthRequest = Request & { user?: AuthenticatedUser; sessionToken?: string };
+const SESSION_COOKIE = 'plantflow_session';
+const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
+export function csrfForSession(token: string) { return createHmac('sha256', token).update('plantflow:csrf:v1').digest('base64url'); }
+function cookieOptions(maxAge?: number) { return { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax' as const, path: '/', ...(maxAge ? { maxAge } : {}) }; }
+function readCookie(request: Request, name: string) { const raw=request.headers.cookie; if (!raw) return undefined; for (const pair of raw.split(';')) { const i=pair.indexOf('='); if(i<0) continue; if(pair.slice(0,i).trim()===name) { try{return decodeURIComponent(pair.slice(i+1).trim())}catch{return undefined} } } return undefined; }
+const sha256=(value:string)=>createHash('sha256').update(value).digest('hex');
+function hashPassword(password:string) { const salt=randomBytes(16).toString('hex'); return `${salt}:${scryptSync(password,salt,64).toString('hex')}`; }
+function verifyPassword(password:string, stored:string) { const [salt,hex]=stored.split(':'); if(!salt||!hex) return false; try { const actual=scryptSync(password,salt,64), expected=Buffer.from(hex,'hex'); return actual.length===expected.length&&timingSafeEqual(actual,expected); } catch { return false; } }
+async function createSession(userId:string,response:Response) { const token=randomBytes(32).toString('base64url'); await prisma.appSession.create({data:{userId,tokenHash:sha256(token),expiresAt:new Date(Date.now()+SESSION_DURATION_MS)}}); response.cookie(SESSION_COOKIE,token,cookieOptions(SESSION_DURATION_MS)); return csrfForSession(token); }
+export async function requireAuth(request:Request,response:Response,next:NextFunction) { const req=request as AuthRequest, token=readCookie(req,SESSION_COOKIE); if(!token){response.status(401).json({error:'AUTH_REQUIRED',message:'Connectez-vous pour continuer.'});return;} try { const stored=await prisma.appSession.findUnique({where:{tokenHash:sha256(token)},include:{user:true}}); if(stored&&stored.expiresAt>new Date()){req.user=stored.user;req.sessionToken=token;next();return;} if(stored) await prisma.appSession.delete({where:{id:stored.id}}).catch(()=>undefined); response.clearCookie(SESSION_COOKIE,cookieOptions()); response.status(401).json({error:'AUTH_REQUIRED',message:'La session a expiré. Reconnectez-vous.'}); } catch(error){next(error)} }
+export function requireCsrf(request:Request,response:Response,next:NextFunction) { if(['GET','HEAD','OPTIONS'].includes(request.method.toUpperCase())){next();return;} const token=(request as AuthRequest).sessionToken, expected=token?csrfForSession(token):'', supplied=request.get('x-plantflow-csrf')??'', a=Buffer.from(expected), b=Buffer.from(supplied); if(!expected||a.length!==b.length||!timingSafeEqual(a,b)){response.status(403).json({error:'CSRF_FAILED',message:'La vérification de sécurité a échoué. Rechargez la page puis réessayez.'});return;} next(); }
+const credentials=z.object({email:z.string().trim().email().max(160),password:z.string().min(8).max(200)});
+export const authRouter=Router();
+authRouter.post('/register',async(request,response,next)=>{try{const input=credentials.extend({name:z.string().trim().min(2).max(120)}).parse(request.body),email=input.email.toLowerCase(),user=await prisma.user.create({data:{email,name:input.name,passwordHash:hashPassword(input.password)}}),csrfToken=await createSession(user.id,response);response.status(201).json({data:{id:user.id,email:user.email,name:user.name},csrfToken});}catch(error){next(error)}});
+authRouter.post('/login',async(request,response,next)=>{try{const input=credentials.parse(request.body),user=await prisma.user.findUnique({where:{email:input.email.toLowerCase()}});if(!user||!verifyPassword(input.password,user.passwordHash)){response.status(401).json({error:'INVALID_CREDENTIALS',message:'Email ou mot de passe incorrect.'});return;}const csrfToken=await createSession(user.id,response);response.json({data:{id:user.id,email:user.email,name:user.name},csrfToken});}catch(error){next(error)}});
+authRouter.get('/session',requireAuth,(request,response)=>{const req=request as AuthRequest;response.json({data:req.user?{id:req.user.id,name:req.user.name,email:req.user.email}:null,csrfToken:req.sessionToken?csrfForSession(req.sessionToken):null})});
+authRouter.post('/logout',requireAuth,requireCsrf,async(request,response,next)=>{try{const token=readCookie(request,SESSION_COOKIE);if(token)await prisma.appSession.deleteMany({where:{tokenHash:sha256(token)}});response.clearCookie(SESSION_COOKIE,cookieOptions());response.status(204).end()}catch(error){next(error)}});
